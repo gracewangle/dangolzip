@@ -7,6 +7,10 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>당골집 MVP v29 | 레퍼런스 모바일앱형</title>
+  
+  <!-- Supabase 연결용 CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
   <style>
     :root{
       --bg:#f6f7fb;
@@ -1738,13 +1742,22 @@
   <div id="app" class="app"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="modal" class="modal" aria-hidden="true"></div>
+  <!-- Supabase 연동 추가: CDN 클라이언트 로드 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const AUTH_KEY="dangolzip_mvp_auth_v2";
     const DATA_KEY="dangolzip_mvp_data_v8";
     const FILTER_KEY="dangolzip_mvp_filters_v1";
+    // Supabase 연동 추가: 실제 프로젝트 URL과 anon key를 입력하면 orders/curators 테이블과 연결됩니다.
+    const SUPABASE_URL="https://ukxxiyqqxpapcqgbbuyx.supabase.co";
+    const SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVreHhpeXFxeHBhcGNxZ2JidXl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1MDI0MjAsImV4cCI6MjA5NjA3ODQyMH0.CdcGmJPk3W5Zy3xUOGvMKiYwvvqwRrriA9TWi9ORxd8";
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    
     const app=document.getElementById("app");
     const modal=document.getElementById("modal");
     const memoryStore={};
+    const supabaseDb=initSupabaseClient();
     let auth=loadAuth();
     let data=loadData();
     let filters=loadFilters();
@@ -1755,6 +1768,8 @@
     let settlementDrafts={};
     let settlementSelections=new Set();
     let curatorSaveLocked=false;
+    let supabaseAdminOrdersLoaded=false;
+    let supabaseAdminOrdersLoading=false;
 
     const ROLE_HOME={admin:"admin",curator:"curator"};
     const PAYMENT_STATUSES=["입금대기","확인필요","입금완료","취소","환불"];
@@ -1814,7 +1829,8 @@
 
     function orderSeed(id,order_number,product_id,curator_id,buyer_name,buyer_phone,buyer_address,quantity,buyer_request,payment_status,delivery_status,settlement_status,created_at){
       const p=seedProduct(product_id);
-      return{id,order_number,product_id,curator_id,buyer_name,buyer_phone,buyer_address,buyer_request,quantity,total_price:p.price*quantity,payment_status,delivery_status,settlement_status,created_at,updated_at:created_at};
+      const seedCuratorCodes={C001:"kim001",C002:"park002",C003:"lee003"};
+      return{id,order_number,product_id,curator_id,curator_code:seedCuratorCodes[curator_id]||"",buyer_name,buyer_phone,buyer_address,buyer_request,quantity,total_price:p.price*quantity,payment_status,delivery_status,settlement_status,created_at,updated_at:created_at};
     }
     function seedProduct(id){
       const map={P001:{price:63000,commission:6300},P002:{price:19800,commission:1780},P003:{price:45000,commission:4500},P004:{price:35000,commission:2800},P005:{price:31800,commission:2540},P006:{price:16500,commission:1160},P007:{price:29800,commission:2680}};
@@ -1858,6 +1874,65 @@
     function applyFilterFromInput(key){const el=document.querySelector(`[data-filter-key="${key}"]`);setFilter(key,el?el.value:"")}
     function searchButton(key){return `<button class="btn" type="button" onclick="applyFilterFromInput('${key}')">검색</button>`}
     function queueFilter(event,key){if(event.isComposing||event.target.dataset.composing==="1")return;clearTimeout(queueFilter.timer);const value=event.target.value;queueFilter.timer=setTimeout(()=>setFilter(key,value),220)}
+    // Supabase 연동 추가: 클라이언트, 주문 insert, 관리자 orders/curators 조회.
+    function initSupabaseClient(){
+      // Supabase 연동 추가: 실제 URL/key 입력 전에는 기존 MVP 화면이 깨지지 않도록 초기화를 보류합니다.
+      if(!SUPABASE_URL||!SUPABASE_ANON_KEY||SUPABASE_URL.includes("여기에")||SUPABASE_ANON_KEY.includes("여기에")||!window.supabase)return null;
+      return window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+    }
+    function supabaseReady(){return !!supabaseDb}
+    function dateOnly(value){return String(value||today()).slice(0,10)}
+    function normalizeSupabaseCurator(row){
+      const code=String(row.code||row.referral_code||"").trim();
+      return{...row,id:String(row.id||code||uid("C")),code,referral_code:code,email:row.email||`${code||uid("curator")}@curator.local`,region:row.region||"",level:row.level||"",memo:row.memo||"",status:row.status==="active"?"활성":(row.status||"활성"),created_at:dateOnly(row.created_at),updated_at:dateOnly(row.updated_at||row.created_at)};
+    }
+    function mergeSupabaseCurators(rows){
+      const codes=new Set(rows.map(c=>curatorCode(c)).filter(Boolean));
+      data.curators=[...rows,...data.curators.filter(c=>!codes.has(curatorCode(c)))];
+    }
+    function normalizeSupabaseOrder(row){
+      const curator_code=String(row.curator_code||"").trim();
+      const curator=curatorByCode(curator_code);
+      return{id:String(row.id||uid("O")),order_number:String(row.order_number||`DG${today().replaceAll("-","")}-${Math.floor(1000+Math.random()*9000)}`),product_id:String(row.product_id||""),curator_id:String(row.curator_id||curator?.id||""),curator_code,buyer_name:row.buyer_name||"",buyer_phone:row.buyer_phone||"",buyer_address:row.buyer_address||"",buyer_request:row.buyer_request||"",quantity:Number(row.quantity||1),total_price:Number(row.total_price||row.total_amount||0),payment_status:row.payment_status||"입금대기",delivery_status:row.delivery_status||"배송준비",settlement_status:row.settlement_status||"정산대기",created_at:dateOnly(row.created_at),updated_at:dateOnly(row.updated_at||row.created_at)};
+    }
+    function orderSupabasePayload(order){
+      return{order_number:order.order_number,product_id:order.product_id,curator_code:order.curator_code,buyer_name:order.buyer_name,buyer_phone:order.buyer_phone,buyer_address:order.buyer_address,buyer_request:order.buyer_request,quantity:order.quantity,total_price:order.total_price,payment_status:order.payment_status,delivery_status:order.delivery_status,settlement_status:order.settlement_status,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+    }
+    async function insertOrderToSupabase(order){
+      if(!supabaseReady())return order;
+      const {data:row,error}=await supabaseDb.from("orders").insert(orderSupabasePayload(order)).select("*").single();
+      if(error)throw error;
+      return normalizeSupabaseOrder({...order,...row});
+    }
+    async function loadAdminOrdersFromSupabase(force=false){
+      if(!supabaseReady()||supabaseAdminOrdersLoading||(!force&&supabaseAdminOrdersLoaded))return;
+      supabaseAdminOrdersLoading=true;
+      const [orderResult,curatorResult]=await Promise.all([
+        supabaseDb.from("orders").select("*").order("created_at",{ascending:false}),
+        supabaseDb.from("curators").select("id,code,name,phone,bank_name,bank_account,bank_holder,commission_rate,status,created_at")
+      ]);
+      supabaseAdminOrdersLoading=false;
+      supabaseAdminOrdersLoaded=true;
+      if(orderResult.error||curatorResult.error){toast("Supabase 주문 데이터를 불러오지 못했습니다.");return}
+      const remoteCurators=(curatorResult.data||[]).map(normalizeSupabaseCurator);
+      if(remoteCurators.length)mergeSupabaseCurators(remoteCurators);
+      data.orders=(orderResult.data||[]).map(normalizeSupabaseOrder);
+      saveData();
+      render();
+    }
+    async function updateSupabaseOrder(order,patch){
+      if(!supabaseReady()||!order)return;
+      const payload={...patch,updated_at:new Date().toISOString()};
+      const useOrderNumber=String(order.id||"").startsWith("O");
+      const result=useOrderNumber
+        ? await supabaseDb.from("orders").update(payload).eq("order_number",order.order_number)
+        : await supabaseDb.from("orders").update(payload).eq("id",order.id);
+      if(result.error)throw result.error;
+    }
+    function syncOrderToSupabase(order,patch){
+      if(!supabaseReady())return;
+      updateSupabaseOrder(order,patch).catch(()=>toast("Supabase 주문 상태 저장에 실패했습니다."));
+    }
     function loadData(){let saved=null;try{saved=JSON.parse(storageGet(DATA_KEY))}catch(e){} if(saved&&saved.schema_version===8&&saved.users&&saved.products&&saved.curator_products&&saved.orders&&saved.settlements){const normalized=normalizeData(saved);storageSet(DATA_KEY,JSON.stringify(normalized));return normalized}const seeded=seedData();storageSet(DATA_KEY,JSON.stringify(seeded));return seeded}
     function saveData(){data=normalizeData(data);storageSet(DATA_KEY,JSON.stringify(data))}
     function resetData(){data=seedData();saveData();toast("MVP 더미 데이터가 초기화되었습니다.");render()}
@@ -1886,6 +1961,15 @@
         if(!email||adminEmails.has(email)||seenCuratorEmails.has(email))return false;
         seenCuratorEmails.add(email);
         return true;
+      }).map(c=>({...c,code:c.code||c.referral_code||""}));
+      // Supabase 연동 추가: orders.curator_code = curators.code 매칭을 위해 기존 주문에도 코드 값을 보정합니다.
+      (next.orders||[]).forEach(o=>{
+        const curator=(next.curators||[]).find(c=>c.id===o.curator_id);
+        if(!o.curator_code&&curator)o.curator_code=curator.code||curator.referral_code||"";
+        if(!o.curator_id&&o.curator_code){
+          const matched=(next.curators||[]).find(c=>(c.code||c.referral_code)===o.curator_code);
+          if(matched)o.curator_id=matched.id;
+        }
       });
       const curatorIds=new Set(next.curators.map(c=>c.id));
       const seenUserKeys=new Set();
@@ -1961,6 +2045,13 @@
     function groupBy(arr,fn){return arr.reduce((map,item)=>{const key=fn(item);(map[key]||(map[key]=[])).push(item);return map},{})}
     function productById(id){return data.products.find(p=>p.id===id)}
     function curatorById(id){return data.curators.find(c=>c.id===id)}
+    // Supabase 연동 추가: orders.curator_code와 curators.code 매칭 전용 헬퍼.
+    function curatorCode(curator){return String(curator?.code||curator?.referral_code||"").trim()}
+    function curatorByCode(code){const normalized=String(code||"").trim();return data.curators.find(c=>curatorCode(c)===normalized)}
+    function orderCuratorCode(order){return String(order?.curator_code||curatorCode(curatorById(order?.curator_id))||"").trim()}
+    function orderCurator(order){return curatorByCode(orderCuratorCode(order))||curatorById(order?.curator_id)}
+    function orderCuratorKey(order){return orderCuratorCode(order)||order?.curator_id||""}
+    function orderMatchesCurator(order,curatorId){const curator=curatorById(curatorId);return order.curator_id===curatorId||(curator&&orderCuratorCode(order)===curatorCode(curator))}
     function userByEmail(email){
       const normalized=String(email).trim().toLowerCase();
       const matches=data.users.filter(u=>String(u.email).toLowerCase()===normalized);
@@ -1971,7 +2062,7 @@
     function requestedGroupbuys(curatorId){return data.curator_products.filter(cp=>cp.curator_id===curatorId&&cp.status==="신청중").map(cp=>({...cp,product:productById(cp.product_id)})).filter(x=>x.product)}
     function activeAssignments(curatorId){return currentGroupbuys(curatorId)}
     function availableProducts(curatorId){const mine=new Set(data.curator_products.filter(cp=>cp.curator_id===curatorId&&cp.status!=="종료").map(cp=>cp.product_id));return data.products.filter(p=>p.status==="판매중"&&!mine.has(p.id))}
-    function curatorOrders(curatorId){return data.orders.filter(o=>o.curator_id===curatorId)}
+    function curatorOrders(curatorId){return data.orders.filter(o=>orderMatchesCurator(o,curatorId))}
     function orderProduct(order){return productById(order.product_id)||{name:"삭제된 상품",price:0,curator_commission:0}}
     function settlementProduct(settlement){const order=data.orders.find(o=>o.id===settlement.order_id);return productById(settlement.product_id||order?.product_id)||{name:"삭제된 상품",price:0,curator_commission:0}}
     function shareUrl(product,assignment){
@@ -2093,8 +2184,8 @@
       const settlements=data.settlements.filter(s=>s.curator_id===curatorId);
       return{orders,paid,sales:paid.reduce((a,o)=>a+o.total_price,0),profit:settlements.filter(s=>s.payout_status!=="정산완료").reduce((a,s)=>a+s.payout_amount,0),settled:settlements.filter(s=>s.payout_status==="정산완료").reduce((a,s)=>a+s.payout_amount,0)};
     }
-    function productSalesCount(productId,curatorId){return data.orders.filter(o=>o.product_id===productId&&o.curator_id===curatorId).reduce((a,o)=>a+Number(o.quantity||0),0)}
-    function curatorProductSummary(curatorId,sourceRows=data.orders.filter(o=>o.curator_id===curatorId)){
+    function productSalesCount(productId,curatorId){return data.orders.filter(o=>o.product_id===productId&&orderMatchesCurator(o,curatorId)).reduce((a,o)=>a+Number(o.quantity||0),0)}
+    function curatorProductSummary(curatorId,sourceRows=curatorOrders(curatorId)){
       const grouped=groupBy(sourceRows,o=>o.product_id);
       return Object.keys(grouped).map(productId=>{const product=productById(productId)||{name:"삭제된 상품",curator_commission:0};const qty=grouped[productId].reduce((a,o)=>a+Number(o.quantity||0),0);return{product,qty,profit:qty*product.curator_commission,sales:grouped[productId].reduce((a,o)=>a+o.total_price,0)}}).sort((a,b)=>b.profit-a.profit);
     }
@@ -2518,7 +2609,7 @@
     function mobileOrderCards(rows,{admin=false,editable=false}={}){
       if(!rows.length)return "";
       return `<div class="mobile-card-list">${rows.map(o=>{
-        const p=orderProduct(o),c=curatorById(o.curator_id);
+        const p=orderProduct(o),c=orderCurator(o),code=orderCuratorCode(o);
         const payment=editable?statusSelect(o.id,"payment_status",o.payment_status,PAYMENT_STATUSES):badge(o.payment_status);
         const delivery=editable?statusSelect(o.id,"delivery_status",o.delivery_status,DELIVERY_STATUSES):badge(o.delivery_status);
         return `<article class="data-card">
@@ -2535,7 +2626,7 @@
           <details class="card-more"><summary>상세보기</summary><div class="info">
             <div class="info-row"><span>연락처</span><strong>${admin?esc(o.buyer_phone):esc(maskPhone(o.buyer_phone))}</strong></div>
             ${admin?`<div class="info-row"><span>주소</span><strong>${esc(o.buyer_address)}</strong></div>`:""}
-            <div class="info-row"><span>큐레이터</span><strong>${esc(c?.name||"-")}</strong></div>
+            ${admin?`<div class="info-row"><span>추천 코드</span><strong>${esc(code||"-")}</strong></div><div class="info-row"><span>큐레이터명</span><strong>${esc(c?.name||"-")}</strong></div>`:""}
           </div></details>
         </article>`;
       }).join("")}</div>`;
@@ -2810,14 +2901,16 @@
     }
 
     function renderAdminOrders(){
+      // Supabase 연동 추가: 관리자 주문 화면 진입 시 public.orders와 public.curators를 불러옵니다.
+      loadAdminOrdersFromSupabase();
       const q=String(filters.order_q||"").toLowerCase();
       const pay=filters.order_pay||"전체";
       const delivery=filters.order_delivery||"전체";
       const showAllPayments=filters.payment_review_view==="all";
       const paymentReviewStatus=filters.payment_review_status||"전체";
       const matchOrderSearch=o=>{
-        const p=orderProduct(o),c=curatorById(o.curator_id);
-        return !q||o.order_number.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||o.buyer_name.toLowerCase().includes(q)||o.buyer_phone.includes(q)||(c?.name||"").toLowerCase().includes(q);
+        const p=orderProduct(o),c=orderCurator(o),code=orderCuratorCode(o);
+        return !q||o.order_number.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||o.buyer_name.toLowerCase().includes(q)||o.buyer_phone.includes(q)||code.toLowerCase().includes(q)||(c?.name||"").toLowerCase().includes(q);
       };
       const rows=data.orders.filter(o=>{
         return (pay==="전체"||o.payment_status===pay)&&(delivery==="전체"||o.delivery_status===delivery)&&matchOrderSearch(o);
@@ -2829,7 +2922,7 @@
       const needsCheck=paymentBaseRows.filter(o=>o.payment_status==="확인필요").length;
       const paid=data.orders.filter(o=>o.payment_status==="입금완료"&&matchOrderSearch(o)).length;
       shell("admin","admin/orders",`<section class="hero"><h1>주문 관리</h1><p class="subtitle">주문이 들어오면 구매자명, 연락처, 금액을 확인하고 입금상태를 저장합니다.</p><div class="toolbar">
-        <input class="input" placeholder="주문번호, 상품, 구매자, 큐레이터 검색" value="${esc(filters.order_q||"")}" ${filterInputAttrs("order_q")}>
+        <input class="input" placeholder="주문번호, 상품, 구매자, 추천 코드, 큐레이터 검색" value="${esc(filters.order_q||"")}" ${filterInputAttrs("order_q")}>
         ${searchButton("order_q")}
         ${filterSelect("order_pay",pay,["전체",...PAYMENT_STATUSES])}
         ${filterSelect("order_delivery",delivery,["전체",...DELIVERY_STATUSES])}
@@ -2867,7 +2960,7 @@
       </section>
       ${!rows.length?empty("조건에 맞는 주문이 없습니다."):""}`);
     }
-    function batchKey(curatorId,productId){return `${curatorId}_${productId}`}
+    function batchKey(curatorId,productId){return `${curatorId}||${productId}`}
     function dominantDeliveryStatus(group){
       const candidates=["배송준비","배송중","배송완료"];
       const ranked=candidates.map(s=>({status:s,count:group.filter(o=>o.delivery_status===s).length})).sort((a,b)=>b.count-a.count);
@@ -2879,11 +2972,12 @@
       if(!entries.length){toast("저장할 배송 변경이 없습니다.");return}
       let count=0;
       entries.forEach(([key,status])=>{
-        const [curatorId,productId]=key.split("_");
+        const [curatorId,productId]=key.split("||");
         data.orders.forEach(o=>{
-          if(o.curator_id===curatorId&&o.product_id===productId&&o.payment_status==="입금완료"){
+          if(orderCuratorKey(o)===curatorId&&o.product_id===productId&&o.payment_status==="입금완료"){
             o.delivery_status=status;
             o.updated_at=today();
+            syncOrderToSupabase(o,{delivery_status:status});
             count++;
           }
         });
@@ -2895,22 +2989,22 @@
     }
     function adminDeliveryBatches(rows){
       const paid=rows.filter(o=>o.payment_status==="입금완료");
-      const groups=Object.values(groupBy(paid,o=>`${o.curator_id}_${o.product_id}`));
+      const groups=Object.values(groupBy(paid,o=>batchKey(orderCuratorKey(o),o.product_id)));
       if(!groups.length)return empty("입금완료 상태의 묶음 배송 대상 주문이 없습니다.");
       const openGroups=groups.filter(group=>!group.every(o=>o.delivery_status==="배송완료"));
       const doneGroups=groups.filter(group=>group.every(o=>o.delivery_status==="배송완료"));
       const showAll=filters.batch_view==="all";
       const renderGroupCards=(list)=>list.map(group=>{
-        const first=group[0],p=orderProduct(first),c=curatorById(first.curator_id);
+        const first=group[0],p=orderProduct(first),c=orderCurator(first),curatorKey=orderCuratorKey(first);
         const qty=group.reduce((a,o)=>a+Number(o.quantity||0),0);
         const statuses=DELIVERY_STATUSES.map(s=>`${s} ${group.filter(o=>o.delivery_status===s).length}건`).filter(t=>!t.includes(" 0건")).join(" · ");
-        const key=batchKey(first.curator_id,first.product_id);
+        const key=batchKey(curatorKey,first.product_id);
         const dominant=dominantDeliveryStatus(group);
         const selected=deliveryDrafts[key]||dominant;
         const changed=deliveryDrafts[key]&&deliveryDrafts[key]!==dominant;
         return `<article class="card batch-card">
           <div>${badge("입금완료")} <span class="badge orange">${esc(p.name)}</span></div>
-          <h3 style="margin:0"><button class="link-button" onclick="openBatchOrders('${first.curator_id}','${first.product_id}')">${esc(c?.name||"-")} 큐레이터</button></h3>
+          <h3 style="margin:0"><button class="link-button" onclick="openBatchOrders('${curatorKey}','${first.product_id}')">${esc(c?.name||"-")} 큐레이터</button></h3>
           <div class="batch-meta">주문 ${group.length}건 · 수량 ${qty}개<br>${esc(statuses||"배송 상태 없음")}</div>
           <label class="field batch-status"><span>배송 상태</span><select class="select" onchange="setDeliveryDraft('${key}',this.value)">${["배송준비","배송중","배송완료"].map(s=>`<option ${s===selected?"selected":""}>${s}</option>`).join("")}</select>${changedMark(changed)}</label>
         </article>`;
@@ -2929,9 +3023,9 @@
       ${visibleDone.length?`<section class="orders-grid batch-grid completed">${renderGroupCards(visibleDone)}</section>`:empty("배송완료 묶음이 없습니다.")}`;
     }
     function openBatchOrders(curatorId,productId){
-      const curator=curatorById(curatorId);
+      const curator=curatorByCode(curatorId)||curatorById(curatorId);
       const product=productById(productId)||{name:"삭제된 상품"};
-      const rows=data.orders.filter(o=>o.curator_id===curatorId&&o.product_id===productId&&o.payment_status==="입금완료");
+      const rows=data.orders.filter(o=>orderCuratorKey(o)===curatorId&&o.product_id===productId&&o.payment_status==="입금완료");
       modal.innerHTML=`<div class="modal-panel wide"><div class="modal-head"><h2>${esc(curator?.name||"-")} · ${esc(product.name)} 주문자</h2><button class="btn small" onclick="closeModal()">닫기</button></div>
         <p class="subtitle" style="margin-bottom:12px">이 공동구매를 통해 입금완료된 주문자 목록입니다.</p>
         <div class="table-wrap"><table class="order-list-table"><thead><tr><th>주문일</th><th>구매자</th><th>연락처</th><th>주소</th><th>수량</th><th>배송상태</th></tr></thead><tbody>
@@ -2943,13 +3037,14 @@
       const visibleIds=rows.map(o=>o.id).join("|");
       return `<div class="table-wrap responsive-table payment-table-wrap"><table class="payment-review-table"><thead><tr>
         <th><label class="check compact-check"><input type="checkbox" onchange="togglePaymentChecks('${visibleIds}',this.checked)"> 선택</label></th>
-        <th>주문일</th><th>주문번호</th><th>상품명</th><th>큐레이터명</th><th>구매자명</th><th>구매자 연락처</th><th>수량</th><th>총 주문금액</th><th>입금상태</th>
+        <th>주문일</th><th>주문번호</th><th>상품명</th><th>추천 코드</th><th>큐레이터명</th><th>구매자명</th><th>구매자 연락처</th><th>수량</th><th>총 주문금액</th><th>입금상태</th>
       </tr></thead><tbody>
-        ${rows.map(o=>{const p=orderProduct(o),c=curatorById(o.curator_id);return `<tr>
+        ${rows.map(o=>{const p=orderProduct(o),c=orderCurator(o),code=orderCuratorCode(o);return `<tr>
           <td><input type="checkbox" class="payment-check" value="${attr(o.id)}" ${paymentSelections.has(o.id)?"checked":""} onchange="togglePaymentCheck('${o.id}',this.checked)" aria-label="${attr(o.buyer_name)} 주문 선택"></td>
           <td>${esc(o.created_at)}</td>
           <td>${esc(o.order_number)}</td>
           <td>${esc(p.name)}</td>
+          <td>${esc(code||"-")}</td>
           <td>${esc(c?.name||"-")}</td>
           <td><strong>${esc(o.buyer_name)}</strong></td>
           <td>${esc(o.buyer_phone)}</td>
@@ -2973,6 +3068,8 @@
       if(order.payment_status===status){toast("이미 같은 입금상태입니다.");return}
       order.payment_status=status;
       order.updated_at=today();
+      // Supabase 연동 추가: 관리자 입금상태 변경을 orders 테이블에도 반영합니다.
+      syncOrderToSupabase(order,{payment_status:status});
       saveData();
       toast(`${order.buyer_name} 주문을 ${status}(으)로 변경했습니다.`);
       render();
@@ -2988,6 +3085,7 @@
         if(order&&order.payment_status!==status){
           order.payment_status=status;
           order.updated_at=today();
+          syncOrderToSupabase(order,{payment_status:status});
           count++;
         }
       });
@@ -2998,8 +3096,8 @@
       render();
     }
     function adminOrderTable(rows,editable){
-      return `<div class="table-wrap responsive-table"><table><thead><tr><th>주문일</th><th>주문번호</th><th>상품명</th><th>큐레이터명</th><th>구매자명</th><th>구매자 연락처</th><th>주소</th><th>수량</th><th>총 주문금액</th><th>입금상태</th><th>배송상태</th></tr></thead><tbody>
-        ${rows.map(o=>{const p=orderProduct(o),c=curatorById(o.curator_id);return `<tr><td>${esc(o.created_at)}</td><td>${esc(o.order_number)}</td><td>${esc(p.name)}</td><td>${esc(c?.name||"-")}</td><td>${esc(o.buyer_name)}</td><td>${esc(o.buyer_phone)}</td><td>${esc(o.buyer_address)}</td><td>${o.quantity}</td><td>${won(o.total_price)}</td><td>${editable?statusSelect(o.id,"payment_status",o.payment_status,PAYMENT_STATUSES):badge(o.payment_status)}</td><td>${editable?statusSelect(o.id,"delivery_status",o.delivery_status,DELIVERY_STATUSES):badge(o.delivery_status)}</td></tr>`}).join("")}
+      return `<div class="table-wrap responsive-table"><table><thead><tr><th>주문일</th><th>주문번호</th><th>상품명</th><th>추천 코드</th><th>큐레이터명</th><th>구매자명</th><th>구매자 연락처</th><th>주소</th><th>수량</th><th>총 주문금액</th><th>입금상태</th><th>배송상태</th></tr></thead><tbody>
+        ${rows.map(o=>{const p=orderProduct(o),c=orderCurator(o),code=orderCuratorCode(o);return `<tr><td>${esc(o.created_at)}</td><td>${esc(o.order_number)}</td><td>${esc(p.name)}</td><td>${esc(code||"-")}</td><td>${esc(c?.name||"-")}</td><td>${esc(o.buyer_name)}</td><td>${esc(o.buyer_phone)}</td><td>${esc(o.buyer_address)}</td><td>${o.quantity}</td><td>${won(o.total_price)}</td><td>${editable?statusSelect(o.id,"payment_status",o.payment_status,PAYMENT_STATUSES):badge(o.payment_status)}</td><td>${editable?statusSelect(o.id,"delivery_status",o.delivery_status,DELIVERY_STATUSES):badge(o.delivery_status)}</td></tr>`}).join("")}
       </tbody></table></div>`;
     }
     function statusSelect(orderId,key,value,options){
@@ -3031,7 +3129,7 @@
       let count=0;
       entries.forEach(([orderId,draft])=>{
         const order=data.orders.find(o=>o.id===orderId);
-        Object.entries(draft).forEach(([key,value])=>{if(applyOrderStatus(order,key,value))count++});
+      Object.entries(draft).forEach(([key,value])=>{if(applyOrderStatus(order,key,value)){syncOrderToSupabase(order,{[key]:value});count++}});
       });
       if(!count){orderDrafts={};toast("변경된 주문 상태가 없습니다.");render();return}
       orderDrafts={};
@@ -3042,9 +3140,10 @@
     function bulkDeliveryStatus(curatorId,productId,status){
       let count=0;
       data.orders.forEach(o=>{
-        if(o.curator_id===curatorId&&o.product_id===productId&&o.payment_status==="입금완료"){
+        if(orderCuratorKey(o)===curatorId&&o.product_id===productId&&o.payment_status==="입금완료"){
           o.delivery_status=status;
           o.updated_at=today();
+          syncOrderToSupabase(o,{delivery_status:status});
           count++;
         }
       });
@@ -3234,7 +3333,6 @@
           <h1>${esc(product.name)}</h1>
           ${priceCompare(product)}
           <div class="info">
-            <div class="info-row"><span>담당 큐레이터</span><strong>${esc(curator.name)}</strong></div>
             <div class="info-row"><span>배송 안내</span><strong>${esc(product.delivery_info)}</strong></div>
             <div class="info-row"><span>환불 안내</span><strong>${esc(product.refund_info)}</strong></div>
           </div>
@@ -3260,24 +3358,39 @@
       const el=document.getElementById("orderTotal");
       if(el&&p)el.textContent=won(p.price*Math.max(1,num(quantity))+(p.shipping_fee||0));
     }
-    function createPublicOrder(event,productId,assignmentId){
+    async function createPublicOrder(event,productId,assignmentId){
       event.preventDefault();
       const fd=new FormData(event.currentTarget);
       const product=productById(productId);
       const assignment=assignmentById(assignmentId);
+      const curator=curatorById(assignment?.curator_id);
       const err=document.getElementById("orderError");
+      const submit=event.currentTarget.querySelector("button[type='submit'],button");
       const buyer_name=String(fd.get("buyer_name")||"").trim();
       const buyer_phone=String(fd.get("buyer_phone")||"").trim();
       const buyer_address=String(fd.get("buyer_address")||"").trim();
       const quantity=Math.max(1,num(fd.get("quantity")));
       if(!buyer_name||!buyer_phone||!buyer_address){err.textContent="이름, 연락처, 주소를 입력해주세요.";return}
       if(fd.get("privacy")!=="yes"){err.textContent="개인정보 수집 동의가 필요합니다.";return}
-      const order={id:uid("O"),order_number:`DG${today().replaceAll("-","")}-${Math.floor(1000+Math.random()*9000)}`,product_id:product.id,curator_id:assignment.curator_id,buyer_name,buyer_phone,buyer_address,buyer_request:String(fd.get("buyer_request")||"").trim(),quantity,total_price:product.price*quantity+(product.shipping_fee||0),payment_status:"입금대기",delivery_status:"배송준비",settlement_status:"정산대기",created_at:today(),updated_at:today()};
-      data.orders.unshift(order);
-      data.settlements.unshift(settlementFromOrder(order,"",product,assignment));
-      saveData();
-      toast("주문이 접수되었습니다.");
-      go(`order-complete/${order.order_number}`);
+      if(!product||!assignment){err.textContent="주문 상품 정보를 확인할 수 없습니다.";return}
+      const order={id:uid("O"),order_number:`DG${today().replaceAll("-","")}-${Math.floor(1000+Math.random()*9000)}`,product_id:product.id,curator_id:assignment.curator_id,curator_code:assignment.custom_referral_code||curatorCode(curator),buyer_name,buyer_phone,buyer_address,buyer_request:String(fd.get("buyer_request")||"").trim(),quantity,total_price:product.price*quantity+(product.shipping_fee||0),payment_status:"입금대기",delivery_status:"배송준비",settlement_status:"정산대기",created_at:today(),updated_at:today()};
+      try{
+        if(submit)submit.disabled=true;
+        // Supabase 연동 추가: 기존 localStorage 저장 전 public.orders 테이블에 insert합니다.
+        const savedOrder=await insertOrderToSupabase(order);
+        data.orders.unshift(savedOrder);
+        data.settlements.unshift(settlementFromOrder(savedOrder,"",product,assignment));
+        saveData();
+        supabaseAdminOrdersLoaded=false;
+        toast("주문이 접수되었습니다.");
+        go(`order-complete/${savedOrder.order_number}`);
+      }catch(error){
+        // Supabase 연동 추가: 주문 저장 실패 메시지.
+        err.textContent="주문 저장 중 오류가 발생했습니다";
+        alert("주문 저장 중 오류가 발생했습니다");
+      }finally{
+        if(submit)submit.disabled=false;
+      }
     }
     function renderOrderComplete(orderNumber){
       const order=data.orders.find(o=>o.order_number===orderNumber);
@@ -3289,11 +3402,12 @@
       </section>
       <article class="panel" style="margin-top:16px">
         <div class="info">
-          <div class="info-row"><span>주문번호</span><strong>${esc(order.order_number)}</strong></div>
+          <!-- Supabase 연동 추가: 구매자 완료 화면에는 추천 코드/큐레이터 정보 없이 주문 필수 정보만 표시합니다. -->
+          <div class="info-row"><span>주문자명</span><strong>${esc(order.buyer_name)}</strong></div>
           <div class="info-row"><span>상품명</span><strong>${esc(product.name)}</strong></div>
           <div class="info-row"><span>수량</span><strong>${order.quantity}개</strong></div>
-          <div class="info-row"><span>주문금액</span><strong class="price">${won(order.total_price)}</strong></div>
-          <div class="info-row"><span>입금 계좌</span><strong>${esc(data.settings.bankAccount)}</strong></div>
+          <div class="info-row"><span>총 결제금액</span><strong class="price">${won(order.total_price)}</strong></div>
+          <div class="info-row"><span>입금 안내</span><strong>${esc(data.settings.bankAccount)}</strong></div>
         </div>
       </article>`);
     }
