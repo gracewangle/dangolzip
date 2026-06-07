@@ -1851,11 +1851,11 @@
       shippingFee:4000
     };
     const BANK_INFO={
-      bankName:"은행명 입력",
-      accountNumber:"계좌번호 입력",
-      holder:"예금주 입력"
+      bankName:"우리은행",
+      accountNumber:"1124567",
+      holder:"하나"
     };
-    const KAKAO_CHAT_URL="여기에_카카오톡_오픈채팅_URL";
+    const KAKAO_CHAT_URL="https://open.kakao.com/o/sXv10Zeg";
     const supabaseConfigured=SUPABASE_URL.startsWith("https://")&&!SUPABASE_URL.includes("여기에_")&&SUPABASE_ANON_KEY.length>20&&!SUPABASE_ANON_KEY.includes("여기에_");
     const supabaseClient=(window.supabase&&supabaseConfigured)?window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY):null;
     let supabaseOrdersLoaded=false;
