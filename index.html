@@ -1928,7 +1928,7 @@
         orderSeed("O014","DG20260528-1014","P007","C003","조하나","010-8787-5454","서울시 서대문구 홍제천로 11",1,"빠른 배송 요청","입금대기","배송준비","정산대기","2026-05-28")
       ];
       const settlements=orders.map((o,i)=>settlementFromOrder(o,`S${String(i+1).padStart(3,"0")}`,products.find(p=>p.id===o.product_id),curator_products.find(cp=>cp.product_id===o.product_id&&cp.curator_id===o.curator_id)));
-      return{schema_version:8,users,curators,products,curator_products,orders,settlements,settings:{serviceName:"당골집",bankAccount:"우리은행 123456-78-90000 당골집",settlementDay:"매월 10일"}};
+      return{schema_version:8,users,curators,products,curator_products,orders,settlements,settings:{serviceName:"당골집",bankAccount:"우리은행 123456-78-789879 당골집",settlementDay:"매월 10일"}};
     }
 
     function orderSeed(id,order_number,product_id,curator_id,buyer_name,buyer_phone,buyer_address,quantity,buyer_request,payment_status,delivery_status,settlement_status,created_at){
